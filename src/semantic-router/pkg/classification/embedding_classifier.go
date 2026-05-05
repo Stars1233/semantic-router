@@ -361,6 +361,16 @@ func (c *EmbeddingClassifier) ClassifyDetailed(text string) (*EmbeddingClassific
 // should be classified against text anchors in the shared multimodal space.
 // For text queries, use ClassifyDetailed.
 func (c *EmbeddingClassifier) ClassifyDetailedMultimodal(modality config.QueryModality, payload string) (*EmbeddingClassificationResult, error) {
+	return c.classifyDetailedMultimodalWithCache(modality, payload, nil)
+}
+
+// classifyDetailedMultimodalWithCache is the cache-aware variant of
+// ClassifyDetailedMultimodal. When cache is non-nil and the (payload,
+// targetDim) pair matches an entry computed by another signal evaluator
+// during the same EvaluateAllSignalsWithContext call, the embedding is
+// reused instead of recomputed via FFI. A nil cache is equivalent to the
+// pre-cache behavior.
+func (c *EmbeddingClassifier) classifyDetailedMultimodalWithCache(modality config.QueryModality, payload string, cache *requestImageEmbeddingCache) (*EmbeddingClassificationResult, error) {
 	if len(c.rules) == 0 {
 		return &EmbeddingClassificationResult{}, nil
 	}
@@ -386,8 +396,12 @@ func (c *EmbeddingClassifier) ClassifyDetailedMultimodal(modality config.QueryMo
 			config.QueryModalityImage)
 	}
 	if effective != config.QueryModalityImage {
-		return nil, fmt.Errorf("unsupported query modality %q (supported: %q, %q)",
-			modality, config.QueryModalityImage, config.QueryModalityAudio)
+		// Defensive catch-all in case a new modality value is added to
+		// config.QueryModality without a branch above. Audio is intentionally
+		// not advertised here because it was just rejected; the only modality
+		// this method actually services today is image.
+		return nil, fmt.Errorf("unsupported query modality %q (supported: %q)",
+			modality, config.QueryModalityImage)
 	}
 
 	startTime := time.Now()
@@ -404,8 +418,16 @@ func (c *EmbeddingClassifier) ClassifyDetailedMultimodal(modality config.QueryMo
 		return &EmbeddingClassificationResult{}, nil
 	}
 
-	// Step 2: Compute query embedding via the multimodal image path.
-	queryEmbedding, err := getMultiModalImageEmbedding(payload, c.optimizationConfig.TargetDimension)
+	// Step 2: Compute query embedding via the multimodal image path. The
+	// cache is consulted first so a sibling signal evaluator (e.g. complexity
+	// image rules) on the same request shares this FFI encode. The cache
+	// stores the full-dim embedding and truncates losslessly under MRL; that
+	// way the divergent targetDim values across signals (complexity hardcodes
+	// 0, embedding uses optimizationConfig.TargetDimension) do not split the
+	// cache and force two FFI calls.
+	queryEmbedding, err := cache.resolve(payload, c.optimizationConfig.TargetDimension, func() ([]float32, error) {
+		return getMultiModalImageEmbedding(payload, 0)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute multimodal query embedding (modality=%s): %w", effective, err)
 	}
