@@ -2,6 +2,7 @@ package extproc
 
 import (
 	"encoding/json"
+	"sync"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	ext_proc "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -31,6 +32,8 @@ type OpenAIRouter struct {
 	Cache                 cache.CacheBackend
 	ToolsDatabase         *tools.ToolsDatabase
 	ToolsRegistry         *tools.Registry // retriever strategy registry
+	toolSelectionDBMu     sync.Mutex
+	toolSelectionDBByPath map[string]*tools.ToolsDatabase
 	ResponseAPIFilter     *ResponseAPIFilter
 	ReplayRecorder        *routerreplay.Recorder
 	ReplayStoreShared     bool

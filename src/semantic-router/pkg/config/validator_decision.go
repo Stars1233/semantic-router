@@ -112,6 +112,11 @@ func validateDecisionPluginContracts(cfg *RouterConfig) error {
 				return fmt.Errorf("decision '%s': %w", decision.Name, err)
 			}
 		}
+		if tsCfg := decision.GetToolSelectionConfig(); tsCfg != nil {
+			if err := tsCfg.Validate(); err != nil {
+				return fmt.Errorf("decision '%s': %w", decision.Name, err)
+			}
+		}
 
 		if imageGenCfg := decision.GetImageGenConfig(); imageGenCfg != nil {
 			if err := imageGenCfg.Validate(); err != nil {

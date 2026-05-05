@@ -1129,6 +1129,35 @@ func (c *Compiler) buildDecisionPlugin(pluginType string, fields map[string]Valu
 		}
 		setPluginConfig(cfg)
 
+	case "tool_selection":
+		dp.Type = "tool_selection"
+		cfg := config.ToolSelectionPluginConfig{}
+		if v, ok := getBoolField(fields, "enabled"); ok {
+			cfg.Enabled = v
+		}
+		if v, ok := getStringField(fields, "mode"); ok {
+			cfg.Mode = v
+		}
+		if v, ok := getIntField(fields, "top_k"); ok {
+			cfg.TopK = v
+		}
+		if v, ok := getFloat32Field(fields, "similarity_threshold"); ok {
+			cfg.SimilarityThreshold = &v
+		}
+		if v, ok := getStringField(fields, "tools_db_path"); ok {
+			cfg.ToolsDBPath = v
+		}
+		if v, ok := getFloat32Field(fields, "relevance_threshold"); ok {
+			cfg.RelevanceThreshold = &v
+		}
+		if v, ok := getIntField(fields, "preserve_count"); ok {
+			cfg.PreserveCount = v
+		}
+		if v, ok := getStringField(fields, "strategy"); ok {
+			cfg.Strategy = v
+		}
+		setPluginConfig(cfg)
+
 	case "tools":
 		cfg := config.ToolsPluginConfig{}
 		if v, ok := getBoolField(fields, "enabled"); ok {

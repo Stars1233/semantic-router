@@ -728,6 +728,38 @@ func decompilePluginConfig(p *config.DecisionPlugin) string {
 		if cfg.StripUnknown {
 			fmt.Fprintf(&sb, "    strip_unknown: true\n")
 		}
+	case "tool_selection":
+		cfg, ok := decodePluginConfig[config.ToolSelectionPluginConfig](p)
+		if !ok {
+			break
+		}
+		if cfg.Enabled {
+			fmt.Fprintf(&sb, "    enabled: true\n")
+		}
+		if cfg.Mode != "" {
+			fmt.Fprintf(&sb, "    mode: %q\n", cfg.Mode)
+		}
+		if cfg.ToolsDBPath != "" {
+			fmt.Fprintf(&sb, "    tools_db_path: %q\n", cfg.ToolsDBPath)
+		}
+		if cfg.TopK != 0 {
+			fmt.Fprintf(&sb, "    top_k: %d\n", cfg.TopK)
+		}
+		if cfg.SimilarityThreshold != nil {
+			fmt.Fprintf(&sb, "    similarity_threshold: %v\n", *cfg.SimilarityThreshold)
+		}
+		if cfg.Strategy != "" {
+			fmt.Fprintf(&sb, "    strategy: %q\n", cfg.Strategy)
+		}
+		if cfg.FallbackToEmpty != nil && *cfg.FallbackToEmpty {
+			fmt.Fprintf(&sb, "    fallback_to_empty: true\n")
+		}
+		if cfg.RelevanceThreshold != nil {
+			fmt.Fprintf(&sb, "    relevance_threshold: %v\n", *cfg.RelevanceThreshold)
+		}
+		if cfg.PreserveCount != 0 {
+			fmt.Fprintf(&sb, "    preserve_count: %d\n", cfg.PreserveCount)
+		}
 	case "tools":
 		cfg, ok := decodePluginConfig[config.ToolsPluginConfig](p)
 		if !ok {
@@ -1954,6 +1986,35 @@ func pluginConfigToFields(p *config.DecisionPlugin) map[string]Value {
 		}
 		if cfg.StripUnknown {
 			fields["strip_unknown"] = BoolValue{V: true}
+		}
+	case "tool_selection":
+		cfg, ok := decodePluginConfig[config.ToolSelectionPluginConfig](p)
+		if !ok {
+			return fields
+		}
+		if cfg.Enabled {
+			fields["enabled"] = BoolValue{V: true}
+		}
+		if cfg.Mode != "" {
+			fields["mode"] = StringValue{V: cfg.Mode}
+		}
+		if cfg.ToolsDBPath != "" {
+			fields["tools_db_path"] = StringValue{V: cfg.ToolsDBPath}
+		}
+		if cfg.TopK != 0 {
+			fields["top_k"] = IntValue{V: cfg.TopK}
+		}
+		if cfg.SimilarityThreshold != nil {
+			fields["similarity_threshold"] = FloatValue{V: float64(*cfg.SimilarityThreshold)}
+		}
+		if cfg.Strategy != "" {
+			fields["strategy"] = StringValue{V: cfg.Strategy}
+		}
+		if cfg.RelevanceThreshold != nil {
+			fields["relevance_threshold"] = FloatValue{V: float64(*cfg.RelevanceThreshold)}
+		}
+		if cfg.PreserveCount != 0 {
+			fields["preserve_count"] = IntValue{V: cfg.PreserveCount}
 		}
 	case "tools":
 		cfg, ok := decodePluginConfig[config.ToolsPluginConfig](p)

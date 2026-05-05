@@ -174,6 +174,7 @@ const sidebars: SidebarsConfig = {
                 'tutorials/plugin/image-gen',
                 'tutorials/plugin/request-params',
                 'tutorials/plugin/system-prompt',
+                'tutorials/plugin/tool-selection',
                 'tutorials/plugin/tools',
               ],
             },

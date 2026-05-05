@@ -21,6 +21,9 @@ type RetrievalInput struct {
 	TopK int
 	// PoolSize is how many candidates to pull from the index (before advanced filters).
 	PoolSize int
+	// MinSimilarity optionally overrides the ToolsDatabase similarity floor for this retrieval.
+	// When nil the database configured threshold is used.
+	MinSimilarity *float32
 }
 
 // EffectivePoolSize returns PoolSize, or a conservative default when unset

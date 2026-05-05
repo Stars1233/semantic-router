@@ -27,7 +27,7 @@ func NewEmbeddingRetriever(db *ToolsDatabase) *EmbeddingRetriever {
 // highest-ranked tool, or 0 when no tools are returned.
 func (e *EmbeddingRetriever) Retrieve(_ context.Context, in RetrievalInput) (RetrievalResult, error) {
 	pool := in.EffectivePoolSize()
-	candidates, err := e.db.FindSimilarToolsWithScores(in.Query, pool)
+	candidates, err := e.db.FindSimilarToolsWithScoresMinSimilarity(in.Query, pool, in.MinSimilarity)
 	if err != nil {
 		return RetrievalResult{StrategyID: StrategyDefault}, err
 	}

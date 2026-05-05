@@ -41,9 +41,15 @@ func (r *OpenAIRouter) applySelectedTools(
 	confidence float32,
 	latency time.Duration,
 	classificationText string,
+	fallbackToEmptyOverride *bool,
 ) error {
+	fallbackEmpty := r.Config.Tools.FallbackToEmpty
+	if fallbackToEmptyOverride != nil {
+		fallbackEmpty = *fallbackToEmptyOverride
+	}
+
 	if len(selectedTools) == 0 {
-		if r.Config.Tools.FallbackToEmpty {
+		if fallbackEmpty {
 			logging.Infof("No suitable tools found, falling back to no tools")
 			openAIRequest.Tools = nil
 		} else {
@@ -117,10 +123,10 @@ func (r *OpenAIRouter) runSemanticToolSelection(
 	metrics.RecordToolsRetrieval(strategyID, latency.Seconds())
 
 	if toolErr != nil {
-		return r.handleToolSelectionError(openAIRequest, response, ctx, toolErr)
+		return r.handleToolSelectionError(openAIRequest, response, ctx, toolErr, r.Config.Tools.FallbackToEmpty)
 	}
 
-	if err := r.applySelectedTools(openAIRequest, selectedTools, strategyID, confidence, latency, classificationText); err != nil {
+	if err := r.applySelectedTools(openAIRequest, selectedTools, strategyID, confidence, latency, classificationText, nil); err != nil {
 		return err
 	}
 	return r.updateRequestWithTools(openAIRequest, response, ctx)
@@ -131,8 +137,9 @@ func (r *OpenAIRouter) handleToolSelectionError(
 	response **ext_proc.ProcessingResponse,
 	ctx *RequestContext,
 	toolErr error,
+	fallbackToEmpty bool,
 ) error {
-	if r.Config.Tools.FallbackToEmpty {
+	if fallbackToEmpty {
 		logging.Warnf("Tool selection failed, falling back to no tools: %v", toolErr)
 		openAIRequest.Tools = nil
 		return r.updateRequestWithTools(openAIRequest, response, ctx)
@@ -149,7 +156,21 @@ func (r *OpenAIRouter) handleToolSelection(
 	response **ext_proc.ProcessingResponse,
 	ctx *RequestContext,
 ) error {
+	if ctx.VSRSelectedDecision == nil {
+		return nil
+	}
+
+	tsPlugin := ctx.VSRSelectedDecision.GetToolSelectionConfig()
 	toolsCfg := resolveDecisionToolsConfig(ctx)
+
+	handled, err := r.handleToolSelectionDecisionPlugin(openAIRequest, userContent, nonUserMessages, response, ctx, tsPlugin, toolsCfg)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+
 	if toolsCfg == nil || !toolsCfg.Enabled {
 		return nil
 	}
@@ -166,21 +187,8 @@ func (r *OpenAIRouter) handleToolSelection(
 		return r.updateRequestWithTools(openAIRequest, response, ctx)
 	}
 
-	// Build classification text and a compact history summary for retrieval.
-	var classificationText string
-	if len(userContent) > 0 {
-		classificationText = userContent
-	} else if len(nonUserMessages) > 0 {
-		classificationText = strings.Join(nonUserMessages, " ")
-	}
-	var historySummary string
-	if len(nonUserMessages) > 0 {
-		historySummary = strings.Join(nonUserMessages, " ")
-	}
-	if historySummary == classificationText {
-		historySummary = ""
-	}
-	if classificationText == "" {
+	classificationText, historySummary, ok := buildToolClassificationText(userContent, nonUserMessages)
+	if !ok {
 		logging.Infof("No content available for tool classification")
 		return nil
 	}
@@ -193,10 +201,79 @@ func (r *OpenAIRouter) handleToolSelection(
 	return r.runSemanticToolSelection(openAIRequest, classificationText, historySummary, response, ctx, toolsCfg)
 }
 
+func (r *OpenAIRouter) handleToolSelectionDecisionPlugin(
+	openAIRequest *openai.ChatCompletionNewParams,
+	userContent string,
+	nonUserMessages []string,
+	response **ext_proc.ProcessingResponse,
+	ctx *RequestContext,
+	tsPlugin *config.ToolSelectionPluginConfig,
+	toolsCfg *config.ToolsPluginConfig,
+) (bool, error) {
+	if tsPlugin == nil || !tsPlugin.Enabled {
+		return false, nil
+	}
+	earlyCfg := toolsCfg
+	if earlyCfg == nil || !earlyCfg.Enabled {
+		earlyCfg = &config.ToolsPluginConfig{Enabled: true, Mode: config.ToolsPluginModePassthrough}
+	}
+
+	shouldContinue, err := r.handleEarlyToolModes(openAIRequest, response, ctx, earlyCfg)
+	if err != nil {
+		return false, err
+	}
+	if !shouldContinue {
+		return true, nil
+	}
+
+	classificationText, historySummary, ok := buildToolClassificationText(userContent, nonUserMessages)
+	if !ok {
+		logging.Infof("No content available for tool classification")
+		return true, nil
+	}
+
+	mode := strings.TrimSpace(tsPlugin.Mode)
+	if mode == "" {
+		mode = config.ToolSelectionModeAdd
+	}
+
+	switch mode {
+	case config.ToolSelectionModeFilter:
+		return true, r.runToolSelectionPluginFilter(openAIRequest, classificationText, response, ctx, tsPlugin)
+	case config.ToolSelectionModeAdd:
+		return true, r.runToolSelectionPluginAdd(openAIRequest, classificationText, historySummary, response, ctx, tsPlugin, toolsCfg)
+	default:
+		return false, fmt.Errorf("tool_selection plugin: unsupported mode %q", mode)
+	}
+}
+
+func (r *OpenAIRouter) retrievalViaEmbeddingDatabase(strategyID string, in tools.RetrievalInput, db *tools.ToolsDatabase) (tools.RetrievalResult, error) {
+	pool := in.EffectivePoolSize()
+	results, err := db.FindSimilarToolsWithScoresMinSimilarity(in.Query, pool, in.MinSimilarity)
+	if err != nil {
+		return tools.RetrievalResult{StrategyID: strategyID}, err
+	}
+	confidence := float32(0)
+	if len(results) > 0 {
+		confidence = results[0].Similarity
+	}
+	return tools.RetrievalResult{
+		Tools:      results,
+		Confidence: confidence,
+		StrategyID: strategyID,
+	}, nil
+}
+
 // executeRetrieval resolves the retriever for strategyID from the registry and
 // runs it with in. If the registry is nil or the strategy is not found, it falls
 // back to ToolsDatabase directly and marks the returned StrategyID with "-fallback".
-func (r *OpenAIRouter) executeRetrieval(ctx context.Context, strategyID string, in tools.RetrievalInput) (tools.RetrievalResult, error) {
+//
+// scopedEmbDB, when non-nil, forces retrieval against that database via embedding
+// similarity (registry strategies are skipped).
+func (r *OpenAIRouter) executeRetrieval(ctx context.Context, strategyID string, in tools.RetrievalInput, scopedEmbDB *tools.ToolsDatabase) (tools.RetrievalResult, error) {
+	if scopedEmbDB != nil {
+		return r.retrievalViaEmbeddingDatabase(strategyID+"-scoped", in, scopedEmbDB)
+	}
 	if r.ToolsRegistry != nil {
 		if retriever, ok := r.ToolsRegistry.Get(strategyID); ok {
 			return retriever.Retrieve(ctx, in)
@@ -216,7 +293,7 @@ func (r *OpenAIRouter) executeRetrieval(ctx context.Context, strategyID string, 
 	}
 
 	pool := in.EffectivePoolSize()
-	results, err := r.ToolsDatabase.FindSimilarToolsWithScores(in.Query, pool)
+	results, err := r.ToolsDatabase.FindSimilarToolsWithScoresMinSimilarity(in.Query, pool, in.MinSimilarity)
 	if err != nil {
 		return tools.RetrievalResult{StrategyID: strategyID + "-fallback"}, err
 	}
@@ -245,16 +322,30 @@ func (r *OpenAIRouter) findToolsForQuery(
 	if topK <= 0 {
 		topK = 3
 	}
-
-	strategyID := toolsCfg.EffectiveStrategy()
-	poolSize := resolveCandidatePoolSize(r.Config.Tools.AdvancedFiltering, topK)
 	advanced := mergeAdvancedToolFiltering(r.Config.Tools.AdvancedFiltering, toolsCfg)
+	return r.findToolsForQueryExt(query, historySummary, ctx, toolsCfg, topK, advanced, toolsCfg.EffectiveStrategy(), nil, r.Config.Tools.SimilarityThreshold)
+}
 
+func (r *OpenAIRouter) findToolsForQueryExt(
+	query, historySummary string,
+	ctx *RequestContext,
+	toolsCfg *config.ToolsPluginConfig,
+	topK int,
+	advanced *config.AdvancedToolFilteringConfig,
+	strategyID string,
+	scopedEmbDB *tools.ToolsDatabase,
+	minSimilarity *float32,
+) ([]openai.ChatCompletionToolParam, string, float32, time.Duration, error) {
+	if topK <= 0 {
+		topK = 3
+	}
+
+	poolSize := resolveCandidatePoolSize(r.Config.Tools.AdvancedFiltering, topK)
 	if advanced != nil && advanced.Enabled {
 		poolSize = resolveCandidatePoolSize(advanced, topK)
 	}
 
-	retrievalIn := newToolRetrievalInput(query, historySummary, topK, poolSize, ctx)
+	retrievalIn := newToolRetrievalInput(query, historySummary, topK, poolSize, ctx, minSimilarity)
 
 	retrievalCtx := context.Background()
 	if ctx != nil && ctx.TraceContext != nil {
@@ -262,7 +353,7 @@ func (r *OpenAIRouter) findToolsForQuery(
 	}
 
 	start := time.Now()
-	retrieved, err := r.executeRetrieval(retrievalCtx, strategyID, retrievalIn)
+	retrieved, err := r.executeRetrieval(retrievalCtx, strategyID, retrievalIn, scopedEmbDB)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -329,12 +420,14 @@ func newToolRetrievalInput(
 	query, historySummary string,
 	topK, poolSize int,
 	ctx *RequestContext,
+	minSimilarity *float32,
 ) tools.RetrievalInput {
 	in := tools.RetrievalInput{
 		Query:          query,
 		HistorySummary: historySummary,
 		TopK:           topK,
 		PoolSize:       poolSize,
+		MinSimilarity:  minSimilarity,
 	}
 	if ctx == nil {
 		return in
